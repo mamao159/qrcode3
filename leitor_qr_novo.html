@@ -1,0 +1,58 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Leitor QR Code — Presença</title>
+<style>:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#172033;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}.wrap{max-width:850px;width:calc(100% - 28px);margin:25px auto}h1{font-size:clamp(1.7rem,5vw,2.3rem);margin:8px 0}p{line-height:1.5;color:#5c6678}.tag{font-size:.75rem;font-weight:800;letter-spacing:.1em;color:#315b9a}.panel{background:white;border:1px solid #dfe5ef;border-radius:18px;padding:clamp(18px,4vw,26px);margin:16px 0;box-shadow:0 8px 24px #1b2b4509}#reader{max-width:480px;margin:10px auto}button{border:0;border-radius:10px;padding:12px 16px;font:inherit;font-weight:700;cursor:pointer;background:#244d91;color:white;margin:6px 5px 6px 0}button:disabled{opacity:.55;cursor:not-allowed}.secondary{background:#e8eef8;color:#244d91}.status{padding:12px;border-radius:10px;background:#f1f4f9;margin:12px 0;font-weight:650}.good{background:#e8f7ee;color:#17643a}.bad{background:#fff0ef;color:#9f2820}.person{display:grid;grid-template-columns:1fr 1fr;gap:12px}.person strong{color:#172033}.small{font-size:.88rem}.hidden{display:none!important}footer{font-size:.82rem;color:#6a7382;margin:24px 0}@media(max-width:480px){.person{grid-template-columns:1fr}}</style></head>
+<body><main class="wrap"><header><span class="tag">CONTROLE DE ENTRADA</span><h1>Leitor de QR Code</h1><p>Identifique participantes e confirme a presença diretamente no Supabase. Não é necessário entrar com e-mail ou senha.</p></header>
+<section class="panel"><h2>1. Ler QR Code</h2><p class="small">Abra pelo GitHub Pages (HTTPS), autorize a câmera e aponte para o QR Code do participante.</p><div id="reader"></div><div id="message" class="status">Pronto para ler um QR Code.</div><button id="start">Iniciar câmera</button><button id="stop" class="secondary">Parar câmera</button></section>
+<section id="personPanel" class="panel hidden"><h2>Participante identificado</h2><div class="person"><div><span class="small">Nome completo</span><br><strong id="personName"></strong></div><div><span class="small">CPF</span><br><strong id="personCpf"></strong></div><div><span class="small">Cadastro</span><br><strong id="personDate"></strong></div><div><span class="small">Situação atual</span><br><strong id="personStatus"></strong></div></div><div id="personMessage" class="status"></div><button id="confirm">Confirmar presença</button><button id="next" class="secondary">Ler próximo participante</button></section>
+<footer>As confirmações são gravadas no Supabase e aparecem para outros leitores. O QR Code funciona como credencial de entrada: mantenha os códigos sob controle.</footer></main>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const SUPABASE_URL='https://ctszmoiqxyjjrfrfcakn.supabase.co';
+const SUPABASE_KEY='sb_publishable__JGw5xH1k5AAdQQmdR6qCQ_gIihcug7';
+const $=id=>document.getElementById(id);
+let scanner=null,running=false,busy=false,current=null,lastText='',lastAt=0;
+function msg(t,type=''){$('message').textContent=t;$('message').className='status '+type}
+function tokenFrom(s){let t=String(s||'').trim();try{const u=new URL(t);return u.searchParams.get('token')||u.searchParams.get('qr_token')||t}catch{return t}}
+function date(t){return t?new Date(t).toLocaleString('pt-BR'):'—'}
+async function rpc(fn,params){
+ const response=await fetch(SUPABASE_URL+'/rest/v1/rpc/'+fn,{method:'POST',headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},body:JSON.stringify(params)});
+ const payload=await response.json().catch(()=>null);
+ if(!response.ok)throw Error((payload&&payload.message)||'Erro HTTP '+response.status);
+ return payload;
+}
+function show(p){
+ current=p;$('personPanel').classList.remove('hidden');
+ $('personName').textContent=p.name||'—';$('personCpf').textContent=p.cpf_masked||'—';
+ $('personDate').textContent=date(p.created_at);$('personStatus').textContent=p.presence_confirmed?'Confirmada':'Pendente';
+ $('personMessage').textContent=p.presence_confirmed?'Atenção: presença já confirmada em '+date(p.presence_at)+'.':'Confira o nome e confirme a entrada.';
+ $('personMessage').className='status '+(p.presence_confirmed?'bad':'');
+ $('confirm').disabled=!!p.presence_confirmed;$('confirm').textContent=p.presence_confirmed?'Presença já confirmada':'Confirmar presença';
+}
+async function identify(raw){
+ if(busy)return;const token=tokenFrom(raw);const now=Date.now();
+ if(token===lastText&&now-lastAt<2000)return;lastText=token;lastAt=now;busy=true;msg('Consultando Supabase...');
+ try{const result=await rpc('event_lookup_qr',{p_token:token});const p=Array.isArray(result)?result[0]:result;
+ if(!p){msg('QR Code não encontrado no banco de dados.','bad');return}
+ show({...p,token});msg('Participante identificado: '+p.name,'good');await stopScanner();
+ }catch(e){msg('Erro ao consultar o Supabase: '+e.message+'. Confira se executou o SQL de configuração.','bad')}finally{busy=false}
+}
+async function startScanner(){
+ if(running||busy)return;if(!window.Html5Qrcode){msg('Biblioteca do leitor não carregou. Verifique a internet.','bad');return}
+ try{scanner=new Html5Qrcode('reader');await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:240,height:240}},identify,()=>{});running=true;$('start').disabled=true;msg('Câmera ativa. Aponte para o QR Code.')}
+ catch(e){msg('Não foi possível abrir a câmera. Autorize o acesso no navegador e use HTTPS. '+e.message,'bad')}
+}
+async function stopScanner(){
+ if(scanner&&running){try{await scanner.stop();await scanner.clear()}catch(e){}}
+ running=false;scanner=null;$('start').disabled=false;
+}
+$('start').onclick=startScanner;$('stop').onclick=async()=>{await stopScanner();msg('Câmera parada.')};
+$('confirm').onclick=async()=>{
+ if(!current||busy||current.presence_confirmed)return;
+ busy=true;$('confirm').disabled=true;msg('Salvando presença no Supabase...');
+ try{const result=await rpc('event_confirm_qr',{p_token:current.token});const p=Array.isArray(result)?result[0]:result;
+ if(!p)throw Error('Código não encontrado');
+ show({...p,token:current.token});msg(p.presence_confirmed?'Presença registrada no Supabase para '+p.name:'Não foi possível confirmar.','good')}
+ catch(e){$('confirm').disabled=false;msg('Erro ao confirmar presença: '+e.message,'bad')}
+ finally{busy=false}
+};
+$('next').onclick=async()=>{current=null;$('personPanel').classList.add('hidden');lastText='';msg('Pronto para o próximo participante.');await startScanner()};
+</script></body></html>
